@@ -1,0 +1,3 @@
+## 2024-03-20 - [Batch Read/Write for ELF Sections]
+**Learning:** Found an optimization where `writeRel` function inside `tools/psp2-fixup/seg.c` was reading ELF relocations one-by-one (`fread` inside a loop) and writing them one-by-one (`fwrite` inside a loop). This is very inefficient as it causes thousands of tiny reads/writes that can be easily batched into a single large read and single large write.
+**Action:** When parsing ELF files or doing heavy I/O, replace single-element loops calling `fread()` and `fwrite()` with chunked/batched operations by reading into an allocated buffer, processing the array in memory, and writing back in one go.

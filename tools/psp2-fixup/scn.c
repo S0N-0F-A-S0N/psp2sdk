@@ -101,17 +101,27 @@ scn_t *getScns(FILE *fp, const char *path, const Elf32_Ehdr *ehdr)
 		return NULL;
 	}
 
-	for (i = 0; i < ehdr->e_shnum; i++) {
-		if (fread(&scns[i].shdr, sizeof(scns[i].shdr), 1, fp) <= 0) {
-			perror(path);
-			free(scns);
-			return NULL;
-		}
+	Elf32_Shdr *shdrs = malloc(ehdr->e_shnum * sizeof(Elf32_Shdr));
+	if (shdrs == NULL) {
+		perror(NULL);
+		free(scns);
+		return NULL;
+	}
 
+	if (fread(shdrs, sizeof(Elf32_Shdr), ehdr->e_shnum, fp) != ehdr->e_shnum) {
+		perror(path);
+		free(scns);
+		free(shdrs);
+		return NULL;
+	}
+
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		scns[i].shdr = shdrs[i];
 		scns[i].orgOffset = scns[i].shdr.sh_offset;
 		scns[i].orgSize = scns[i].shdr.sh_size;
 	}
 
+	free(shdrs);
 	return scns;
 }
 
