@@ -79,21 +79,33 @@ seg_t *getSegs(FILE *fp, const char *path,
 		return NULL;
 	}
 
-	i = 0;
-	while (i < ehdr->e_phnum) {
-		if (fread(&segs[i].phdr, sizeof(segs[i].phdr), 1, fp) <= 0) {
-			perror(path);
-			free(segs);
-			return NULL;
-		}
+	Elf32_Phdr *phdrs = malloc(ehdr->e_phnum * sizeof(Elf32_Phdr));
+	if (phdrs == NULL) {
+		perror(NULL);
+		free(segs);
+		return NULL;
+	}
 
-		if (segs[i].phdr.p_type == PT_ARM_EXIDX)
+	if (fread(phdrs, sizeof(Elf32_Phdr), ehdr->e_phnum, fp) != ehdr->e_phnum) {
+		perror(path);
+		free(segs);
+		free(phdrs);
+		return NULL;
+	}
+
+	i = 0;
+	Elf32_Half count = 0;
+	while (count < ehdr->e_phnum) {
+		segs[i].phdr = phdrs[count];
+		if (segs[i].phdr.p_type == PT_ARM_EXIDX) {
 			ehdr->e_phnum--;
-		else {
+		} else {
 			segs[i].shnum = 0;
 			i++;
 		}
+		count++;
 	}
+	free(phdrs);
 
 	mapOverScnSeg(segCntScns, (scn_t *)scns, segs, ehdr);
 
@@ -340,6 +352,11 @@ static int writeRel(FILE *dst, FILE *src,
 	const Elf32_Sym *sym;
 	Elf32_Word i, j, type;
 
+	// Bolt optimization: read and write in chunks instead of per-element
+	Elf32_Rel *rels;
+	Psp2_Rela_Short *relas;
+	size_t num_rels, rela_count;
+
 	if (dst == NULL || src == NULL
 		|| scn == NULL || seg == NULL || scns == NULL
 		|| strtab == NULL || symtab == NULL)
@@ -349,11 +366,33 @@ static int writeRel(FILE *dst, FILE *src,
 
 	dstScn = scns + scn->shdr.sh_info;
 
-	for (i = 0; i < scn->orgSize; i += sizeof(rel)) {
-		if (fread(&rel, sizeof(rel), 1, src) <= 0) {
-			perror(strtab + scn->shdr.sh_name);
-			return errno;
-		}
+	if (scn->orgSize == 0)
+		return 0;
+
+	rels = malloc(scn->orgSize);
+	if (rels == NULL) {
+		perror("malloc");
+		return errno;
+	}
+
+	if (fread(rels, scn->orgSize, 1, src) <= 0) {
+		perror(strtab + scn->shdr.sh_name);
+		free(rels);
+		return errno;
+	}
+
+	num_rels = scn->orgSize / sizeof(Elf32_Rel);
+	relas = malloc(num_rels * sizeof(Psp2_Rela_Short));
+	if (relas == NULL) {
+		perror("malloc");
+		free(rels);
+		return errno;
+	}
+
+	rela_count = 0;
+
+	for (i = 0; i < num_rels; i++) {
+		rel = rels[i];
 
 		type = ELF32_R_TYPE(rel.r_info);
 		if (type == R_ARM_NONE || type == R_ARM_TARGET2)
@@ -384,11 +423,13 @@ usual:
 			if (type == R_ARM_ABS32 || type == R_ARM_TARGET1) {
 				if (fseek(src, dstScn->orgOffset + rel.r_offset, SEEK_SET)) {
 					perror(strtab + scn->shdr.sh_name);
+					free(rels); free(relas);
 					return errno;
 				}
 
 				if (fread(&j, sizeof(j), 1, src) <= 0) {
 					perror(strtab + scn->shdr.sh_name);
+					free(rels); free(relas);
 					return errno;
 				}
 
@@ -397,13 +438,19 @@ usual:
 		}
 
 		rela.r_offset = dstScn->segOffset + rel.r_offset;
+		relas[rela_count++] = rela;
+	}
 
-		if (fwrite(&rela, sizeof(rela), 1, dst) != 1) {
+	if (rela_count > 0) {
+		if (fwrite(relas, sizeof(Psp2_Rela_Short), rela_count, dst) != rela_count) {
 			perror(strtab + scn->shdr.sh_name);
+			free(rels); free(relas);
 			return errno;
 		}
 	}
 
+	free(rels);
+	free(relas);
 	return 0;
 }
 
